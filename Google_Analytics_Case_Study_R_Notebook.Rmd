@@ -1,0 +1,403 @@
+---
+title: "Google Analytics Case Study"
+author: "Justin Alt"
+date: "8/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Google Analytics Case Study
+
+## Libraries and Packages
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(janitor)
+library(lubridate)
+library(ggmap)
+library(maps)
+library(mapdata)
+library(RColorBrewer)
+```
+
+## Accessing the Data
+
+### Preparing the dataframe
+The data was stored in separate .csv files for each of the past 12 months. First, I will access the data by creating separate variables for each.
+
+```{r}
+data_2020_07 <- read.csv("data_last_12_months/202007-divvy-tripdata.csv")
+data_2020_08 <- read.csv("data_last_12_months/202008-divvy-tripdata.csv")
+data_2020_09 <- read.csv("data_last_12_months/202009-divvy-tripdata.csv")
+data_2020_10 <- read.csv("data_last_12_months/202010-divvy-tripdata.csv")
+data_2020_11 <- read.csv("data_last_12_months/202011-divvy-tripdata.csv")
+data_2020_12 <- read.csv("data_last_12_months/202012-divvy-tripdata.csv")
+data_2021_01 <- read.csv("data_last_12_months/202101-divvy-tripdata.csv")
+data_2021_02 <- read.csv("data_last_12_months/202102-divvy-tripdata.csv")
+data_2021_03 <- read.csv("data_last_12_months/202103-divvy-tripdata.csv")
+data_2021_04 <- read.csv("data_last_12_months/202104-divvy-tripdata.csv")
+data_2021_05 <- read.csv("data_last_12_months/202105-divvy-tripdata.csv")
+data_2021_06 <- read.csv("data_last_12_months/202106-divvy-tripdata.csv")
+
+```
+
+Now that I have all the .csv files stored as variables, I will inspect each file to ensure that they are organized in the same way. Provided they have the same column headings and data types, I will join them into a single dataframe. 
+
+My first step is to create a list of dataframes that I can iterate over.
+
+```{r}
+monthly_datasets <- list(data_2020_07, data_2020_08, data_2020_09, data_2020_10, data_2020_11, 
+  data_2020_12, data_2021_01, data_2021_02, data_2021_03, data_2021_04, data_2021_05, 
+  data_2021_06)
+  
+```
+
+With that list, I can use the function compare_df_cols() from the janitor package to compare the contents of each list to ensure that column names are the same and the rows contain items of the same class.
+
+```{r}
+compare_df_cols(monthly_datasets)
+```
+
+The columns line up, so I can join all the dataframes into one. 
+
+```{r}
+cyclic_data <- rbind(data_2020_07, data_2020_08, data_2020_09, data_2020_10, data_2020_11, 
+  data_2020_12, data_2021_01, data_2021_02, data_2021_03, data_2021_04, data_2021_05, 
+  data_2021_06)
+```
+
+### Cleaning the data
+Next, we are going to clean the data. First, I will seek duplicates across the files to ensure that no trip is counted more than once.
+
+```{r}
+cyclic_data <- distinct(cyclic_data)
+```
+
+And use the srt() function to check the type of items in each column.
+```{r}
+str(cyclic_data)
+```
+
+### Analyze the Data
+
+With the data cleaned, I can begin to analyze it. First, I'm going to find the quintiles for ridelengths to get a sense of the data's range. The first step is to add a column calculating the length of each ride. 
+
+```{r}
+cyclic_data <- cyclic_data %>% 
+  mutate(ride_duration = as.numeric(difftime(ended_at, started_at, units = "mins")))
+```
+
+Next, I'll look at some summary stastics, including the mean and maximum ride length.
+```{r}
+cyclic_data %>% 
+  summarize(mean_ride_duration = mean(ride_duration), max_ride_duration = max(ride_duration))
+```
+And the usage across days of the week.
+
+```{r}
+cyclic_data <- cyclic_data %>% 
+  mutate(day_of_the_week = weekdays(ymd_hms(started_at)))
+```
+
+Which I will graph as a bar chart to get a visual.
+
+```{r}
+ggplot(data=cyclic_data, aes(x=day_of_the_week)) +
+  geom_bar()
+
+```
+
+That gives us a sense of the data. Now, we are ready to disaggregate the data by members and casual riders.
+
+### Disaggregate Data to Find Insights
+
+First, we will create two separate dataframes, one with only members and one with only casual users.
+
+```{r}
+member_data <- filter(cyclic_data, member_casual == "member")
+casual_data <- filter(cyclic_data, member_casual == "casual")
+```
+
+Next, we will run the same analyses as above to compare the two datasets.
+
+```{r}
+member_data %>% 
+  summarize(member_mean_duration = mean(ride_duration), 
+            max_member_ride_duration = max(ride_duration))
+```
+```{r}
+casual_data %>% 
+  summarize(casual_mean_duration = mean(ride_duration),
+            max_casual_ride_duration = max(ride_duration))
+```
+That first disaggregation already tells us something interesting about how members use the program compared to casual users: casual users's average rides are more than three times longer than members' average rides.
+
+```{r}
+ggplot(data=member_data, aes(x=day_of_the_week)) +
+  geom_bar() + labs(title = "Member Day of the Week")
+
+```
+
+```{r}
+ggplot(data=casual_data, aes(x=day_of_the_week)) +
+  geom_bar() + labs(title = "Casual Day of the Week")
+
+```
+
+Here again, we see interesting differences between the usage of the two groups. Members tend to vary less across days of the week. Casual users, on the other hand, are more likely to use the service on weekends.
+
+Another area that could be of interest is looking at which stations are most commonly used by casual vs. members. I'll use the skimr package to find how many different stations there are.
+
+```{r}
+skim(cyclic_data)
+```
+
+It appears there are a little over 700 stations. Given that, I will find the top ten most commonly used stations for all users, and then for just members and just casual users to see if trends appear.
+
+```{r}
+all_station_count <- cyclic_data %>% 
+  group_by(start_station_name, start_lat, start_lng) %>% 
+  summarize(station_departures = n())
+
+```
+
+```{r}
+all_station_count <- all_station_count %>% 
+  arrange(desc(station_departures))
+```
+
+```{r}
+head(all_station_count, 11)
+```
+
+```{r}
+summary(all_station_count)
+```
+
+
+```{r}
+all_users_station_count <- cyclic_data %>% 
+  group_by(start_station_name) %>% 
+  summarize(n = n()) %>% 
+  mutate(Freq = n/sum(n))
+```
+
+```{r}
+member_station_count <- member_data %>% 
+  group_by(start_station_name) %>% 
+  summarize(n = n()) %>% 
+  mutate(Freq = n/sum(n))
+```
+
+```{r}
+member_station_count <- member_station_count %>% 
+  arrange(desc(Freq))
+```
+
+
+```{r}
+head(member_station_count, 11)
+```
+
+
+```{r}
+casual_station_count <- casual_data %>% 
+  group_by(start_station_name) %>% 
+  summarize(n = n()) %>% 
+  mutate(Freq = n/sum(n))
+```
+
+```{r}
+casual_station_count <- casual_station_count %>% 
+  arrange(desc(Freq))
+```
+
+```{r}
+head(casual_station_count, 11)
+```
+
+
+Now that I have the most frequently used stations, I will pull the latitude and longitude for those stations so that I can create a visual that helps get a sense of where each group accesses most frequently.
+
+First, I will create a dataframe with the station names and their latitude and longitude.
+
+```{r}
+station_geo <- cyclic_data %>% 
+  select(start_station_name, start_lat, start_lng, member_casual)
+```
+
+
+```{r}
+station_geo <- station_geo %>% 
+  distinct(start_station_name, .keep_all = TRUE)
+```
+
+Next, create separate dfs for members and casual users, all with station names, lat/lng, and counts of trips from those stations.
+```{r}
+member_station_geo <- left_join(member_station_count, station_geo)
+```
+
+```{r}
+casual_station_geo <- left_join(casual_station_count, station_geo)
+```
+
+```{r}
+head(casual_station_geo)
+
+```
+
+```{r}
+head(member_station_geo)
+```
+
+With those created, I am going to create the maps using ggmap.
+
+```{r}
+chi_bb <- c(
+  left = -87.936287,
+  bottom = 41.679835,
+  right = -87.447052,
+  top = 42.000835
+)
+
+chicago_map <- get_stamenmap(
+  bbox = chi_bb,
+  zoom = 11
+)
+chicago_map
+```
+
+```{r}
+ggmap(chicago_map) + geom_point(aes(x = -87.69000, y = 41.90000)) + labs(title = "Stations Map")
+
+```
+
+```{r}
+ggmap(chicago_map) + geom_point(data = station_geo, aes(x = start_lng, y = start_lat, 
+                                                        color = member_casual)) + 
+                                labs(title = "Stations Map")
+
+```
+
+This map offers some promise, but I think I can get a better sense of the data if I do separate maps for casual users and members. In order to have more options with the map, I am going to add a variable for the logarithm of the station count, which will allow the differences in datapoints to stand out in a different way.
+
+```{r}
+member_station_geo <- member_station_geo %>% 
+  mutate(n_log = log(n))
+```
+
+```{r}
+casual_station_geo <- casual_station_geo %>% 
+  mutate(n_log = log(n))
+```
+
+And then I will plot the maps for both members and casual users.
+```{r}
+ggmap(chicago_map) + geom_point(data = member_station_geo, aes(x = start_lng, y = start_lat, 
+                                                               color = n_log, alpha = 0)) + 
+                                labs(title = "Member Stations Map") +
+                                scale_color_gradient(low="white", high="darkblue")
+```
+
+```{r}
+ggmap(chicago_map) + geom_point(data = casual_station_geo, aes(x = start_lng, y = start_lat, 
+                                                               color = n_log,)) + 
+                                labs(title = "Member Stations Map") +
+                                scale_color_gradient(low="white", high="darkgreen")
+```
+
+There are differences apparent. I will zoom in now to take a closer look at the heart of the city.
+
+```{r}
+chicago_map_zoomed <- get_stamenmap(
+  bbox = chi_bb,
+  zoom = 13)
+
+```
+
+```{r}
+ggmap(chicago_map_zoomed) + geom_point(
+  data = member_station_geo, aes(x = start_lng, y = start_lat, 
+                                size = n_log, color = n_log, alpha = 0)) + 
+                                labs(title = "Member Stations Scatterplot Map") +
+                                scale_color_gradient(low="red", high="darkblue")
+```
+
+
+
+```{r}
+ggmap(chicago_map_zoomed) + geom_point(
+  data = casual_station_geo, aes(x = start_lng, y = start_lat, 
+                                size = n_log, color = n_log, alpha = 0)) + 
+                                labs(title = "Casual Stations Scatterplot Map") +
+                                scale_color_gradient(low="Yellow", high="darkgreen")
+```
+
+
+Those maps are getting closer to informative. I think we can do better, though. 
+
+```{r}
+ggmap(chicago_map_zoomed) + geom_density_2d_filled(
+  data = member_station_geo, aes(x = start_lng, y = start_lat, 
+                                size = n, fill_color = n, alpha = 0)) + 
+                                labs(title = "Member Stations Density Map")
+```
+
+```{r}
+ggmap(chicago_map_zoomed) + geom_density_2d_filled(
+  data = casual_station_geo, aes(x = start_lng, y = start_lat, 
+                                size = n, fill_color = n, alpha = 0)) + 
+                                labs(title = "Casual Stations Density Map")
+```
+
+It looks as though, from the maps, the usage is quite similar across groups.
+
+
+## Preparing Membership Data for Stakeholders
+
+From my recommendations (see presentation for details), I will share with stakeholders two .csv files: casual users who frequently ride on weekdays and casual users who often visit the stations most highly used by members.
+
+First, the data on weekday casual riders.
+
+```{r}
+weekday_casual <- cyclic_data %>% 
+  select(ride_id, day_of_the_week, member_casual) %>% 
+  filter(day_of_the_week != "Sunday" & day_of_the_week != "Saturday") %>% 
+  filter(member_casual == "casual")
+
+```
+
+```{r}
+write.csv(weekday_casual,'weekday_casual_users.csv')
+```
+
+Next, the data on casual visitors to the twenty-five stations most visited by members. 
+
+```{r}
+top_25_stations <- member_station_count %>% 
+  select(start_station_name, n) %>% 
+  slice(1:25)
+
+```
+
+```{r}
+casual_rides <- cyclic_data %>% 
+  select(ride_id, member_casual, start_station_name) %>% 
+  filter(member_casual == "casual")
+```
+
+
+```{r}
+top_stations_visits <- left_join(top_25_stations, casual_rides)
+```
+
+```{r}
+write.csv(top_stations_visits,'top_stations_visits.csv')
+```
+
+
+
